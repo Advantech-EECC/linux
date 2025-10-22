@@ -614,6 +614,7 @@ S:	Maintained
 F:	drivers/gpio/gpio-eio.c
 F:	drivers/hwmon/eio-hwmon.c
 F:	drivers/mfd/eio_core.c
+F:	drivers/thermal/eio_fan.c
 F:	include/linux/mfd/eio.h
 
 ADVANTECH SWBTN DRIVER
