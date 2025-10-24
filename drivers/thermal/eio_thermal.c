@@ -199,6 +199,43 @@ static int eio_tz_set_trip_temp(struct thermal_zone_device *tzd,
 	return pmc_write(eio_thermal->mfd, ctl, eio_thermal->ch, &val);
 }
 
+#if 0
+static inline enum thermal_trip_type eio_expected_type(int trip)
+{
+	switch (trip) {
+	case TRIP_SHUTDOWN:
+		return THERMAL_TRIP_CRITICAL; /* shutdown */
+	case TRIP_POWEROFF:
+		return THERMAL_TRIP_HOT;      /* power button */
+	case TRIP_THROTTLE:
+		return THERMAL_TRIP_PASSIVE;  /* throttle */
+	default:
+		return -ENODEV;
+	}
+}
+
+static bool eio_tz_should_bind(struct thermal_zone_device *tzd,
+			       const struct thermal_trip *trip,
+                               struct thermal_cooling_device *cdev,
+			       struct cooling_spec *spec)
+{
+	struct eio_trip_dev *eio_trip = cdev->devdata;
+	enum thermal_trip_type expect;
+
+	if (!eio_trip || !trip || !spec)
+		return false;
+
+	expect = eio_expected_type(eio_trip->idx);
+
+	if (expect == -ENODEV || trip->type != expect)
+		return false;
+
+	spec->lower  = 0;
+	spec->upper  = 1;
+	spec->weight = THERMAL_WEIGHT_DEFAULT;
+	return true;
+}
+#endif
 static int eio_tz_change_mode(struct thermal_zone_device *tzd,
 			      enum thermal_device_mode mode)
 {
@@ -217,12 +254,78 @@ static int eio_tz_change_mode(struct thermal_zone_device *tzd,
 	return ret;
 }
 
+#if 0
+static int eio_cdev_get_max_state(struct thermal_cooling_device *cdev,
+				  unsigned long *state)
+{
+	*state = 1;
+
+	return 0;
+}
+
+static int eio_cdev_get_cur_state(struct thermal_cooling_device *cdev,
+				  unsigned long *state)
+{
+	struct eio_trip_dev *eio_trip = cdev->devdata;
+	u16 val = 0;
+	int ret;
+
+	if (eio_trip->idx >= ARRAY_SIZE(ctrl_map))
+		return -EINVAL;
+
+	ret = pmc_read(eio_trip->mfd, ctrl_map[eio_trip->idx], eio_trip->ch, &val);
+	if (ret)
+		return ret;
+
+	*state = val ? 1 : 0;
+	return 0;
+}
+
+static int eio_cdev_set_cur_state(struct thermal_cooling_device *cdev,
+				  unsigned long state)
+{
+	struct eio_trip_dev *eio_trip = cdev->devdata;
+	static const u8 ctrl_map[] = {
+		CTRL_SHUTDOWN, CTRL_POWEROFF, CTRL_THROTTLE
+	};
+	u8 val;
+
+	if (eio_trip->idx >= ARRAY_SIZE(ctrl_map))
+		return -EINVAL;
+	if (state > 1)
+		return -EINVAL;
+	val = state ? 1 : 0;
+
+	return pmc_write(eio_trip->mfd, ctrl_map[eio_trip->idx],
+			eio_trip->ch, &val);
+}
+
+static const char * const eio_cdev_type_names[] = {
+	[TRIP_SHUTDOWN] = "eio_shutdown",
+	[TRIP_POWEROFF] = "eio_poweroff",
+	[TRIP_THROTTLE] = "eio_throttle",
+};
+
+static const char *eio_cdev_type_name(int trip)
+{
+	return (trip >= 0 && trip < ARRAY_SIZE(eio_cdev_type_names) &&
+	       eio_cdev_type_names[trip]) ? eio_cdev_type_names[trip] : "eio_trip";
+}
+#endif
 static struct thermal_zone_device_ops zone_ops = {
 	.get_temp = eio_tz_get_temp,
 	.set_trip_temp = eio_tz_set_trip_temp,
+	//.should_bind   = eio_tz_should_bind,
 	.change_mode   = eio_tz_change_mode,
 };
 
+#if 0
+static struct thermal_cooling_device_ops cooling_ops = {
+	.get_max_state = eio_cdev_get_max_state,
+	.get_cur_state = eio_cdev_get_cur_state,
+	.set_cur_state = eio_cdev_set_cur_state,
+};
+#endif
 static struct thermal_zone_params zone_params = {
 	.no_hwmon      = true,
 };
@@ -232,6 +335,7 @@ static int eio_thermal_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ch;
 
+	/* parent/core must be present */
 	if (!dev_get_drvdata(dev->parent)) {
 		dev_err(dev, "eio_core not present\n");
 		return -ENODEV;
@@ -246,6 +350,10 @@ static int eio_thermal_probe(struct platform_device *pdev)
 		int ntrips = 0;
 		struct eio_thermal_dev *eio_th;
 		struct thermal_zone_device *tzd;
+#if 0
+		struct thermal_cooling_device *cdev[TRIP_NUM];
+		int trip;
+#endif
 
 		if (pmc_read(dev->parent, CTRL_STATE, (u8)ch, &state) ||
 		    pmc_read(dev->parent, CTRL_TYPE,  (u8)ch, &name)) {
@@ -323,6 +431,28 @@ static int eio_thermal_probe(struct platform_device *pdev)
 							      THERMAL_POLLING_DELAY);
 		if (IS_ERR(tzd))
 			return PTR_ERR(tzd);
+#if 0
+		for (trip = 0; trip < TRIP_NUM; trip++) {
+			struct eio_trip_dev *eio_trip = devm_kzalloc(dev,
+									       sizeof(*eio_trip),
+									       GFP_KERNEL);
+			if (!eio_trip)
+				return -ENOMEM;
+
+			eio_trip->mfd = dev->parent;
+			eio_trip->ch = (u8)ch;
+			eio_trip->idx = trip;
+			cdev[trip] = thermal_cooling_device_register(eio_cdev_type_name(trip),
+								     eio_trip,
+								     &cooling_ops);
+			if (IS_ERR(cdev[trip])) {
+				dev_err_probe(dev, PTR_ERR(cdev[trip]),
+					      "Create cooling device failed (ch=%ld trip=%d)\n",
+					      ch, trip);
+				continue;
+			}
+		}
+#endif
 		/* Make sure zones start disabled */
 		thermal_zone_device_disable(tzd);
 
